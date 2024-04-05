@@ -4,10 +4,10 @@
 import {
   DynamoDBHelper,
   LambdaTriggers,
+  ServiceQuotaCustom,
   logger,
   UnsupportedEventException,
 } from "solutions-utils";
-import { ServiceQuota } from "@aws-sdk/client-service-quotas";
 import {
   createQuotaUtilizationEvents,
   generateCWQueriesForAllQuotas,
@@ -59,11 +59,19 @@ async function handleQuotasForService(service: string) {
     service
   );
   if (!quotaItems || quotaItems.length == 0) return; // no quota items found
-  const queries = generateCWQueriesForAllQuotas(<ServiceQuota[]>quotaItems);
-  const metricQueryIdToQuotaMap = generateMetricQueryIdMap(
-    <ServiceQuota[]>quotaItems
+  const queries = generateCWQueriesForAllQuotas(
+    <ServiceQuotaCustom[]>quotaItems
   );
+  console.log("Queries: " + JSON.stringify(queries));
+
+  const metricQueryIdToQuotaMap = generateMetricQueryIdMap(
+    <ServiceQuotaCustom[]>quotaItems
+  );
+  console.log("QueryIdToQuotaMap: " + JSON.stringify(metricQueryIdToQuotaMap));
+
   const metrics = await getCWDataForQuotaUtilization(queries);
+  console.log("Metrics: " + JSON.stringify(metrics));
+
   await Promise.allSettled(
     metrics.map(async (metric) => {
       const utilizationEvents = createQuotaUtilizationEvents(

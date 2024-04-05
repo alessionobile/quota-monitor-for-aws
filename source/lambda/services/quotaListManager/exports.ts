@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { OperationType, _Record } from "@aws-sdk/client-dynamodb-streams";
-import { ServiceQuota } from "@aws-sdk/client-service-quotas";
 import {
   DynamoDBHelper,
   ServiceQuotasHelper,
+  ServiceQuotaCustom,
   IncorrectConfigurationException,
   createChunksFromArray,
   LambdaTriggers,
@@ -79,7 +79,7 @@ export async function putServiceMonitoringStatus(
       newServices.map(async (service) => {
         await ddb.putItem(serviceTable, {
           ServiceCode: service,
-          Monitored: true,
+          Monitored: false,
         });
       })
     );
@@ -152,7 +152,7 @@ export function readDynamoDBStreamEvent(event: Record<string, any>) {
   if (
     streamRecord.eventName == "INSERT" &&
     streamRecord.dynamodb?.NewImage?.ServiceCode?.S &&
-    streamRecord.dynamodb?.NewImage?.Monitored?.BOOL
+    typeof streamRecord.dynamodb?.NewImage?.Monitored?.BOOL === "boolean"
   )
     return <OperationType>"INSERT";
   // service monitoring toggled
@@ -201,13 +201,87 @@ async function _getQuotasWithUtilizationMetrics(serviceCode: string) {
  * @param quotas - quotas that support utilization metrics
  * @param table - table to update for quota codes to monitor
  */
-async function _putMonitoredQuotas(quotas: ServiceQuota[], table: string) {
+async function _putMonitoredQuotas(
+  quotas: ServiceQuotaCustom[],
+  table: string
+) {
   const ddb = new DynamoDBHelper();
   await Promise.allSettled(
     quotas.map(async (quota) => {
       await ddb.putItem(table, quota);
     })
   );
+}
+
+/**
+ * @description turn on/off all quotas for a given service
+ * @param serviceCode
+ */
+export async function updateQuotasForService(serviceCode: string) {
+  const ddb = new DynamoDBHelper();
+
+  const quotaItems = await ddb.queryQuotasForService(
+    <string>process.env.SQ_QUOTA_TABLE,
+    serviceCode
+  );
+  console.log("Quota Items from DDB: " + JSON.stringify(quotaItems));
+
+  const deleteRequestChunks = _getChunkedDeleteQuotasRequests(
+    <ServiceQuotaCustom[]>quotaItems
+  );
+  await Promise.allSettled(
+    deleteRequestChunks.map(async (chunk) => {
+      await ddb.batchDelete(<string>process.env.SQ_QUOTA_TABLE, chunk);
+    })
+  );
+
+  const sq = new ServiceQuotasHelper();
+
+  const quotaItemsFromAPI = (await sq.getQuotaList(serviceCode)) || [];
+  console.log("Quota Items from API: " + JSON.stringify(quotaItemsFromAPI));
+
+  const quotaItemsMerged = mergeQuotas(quotaItemsFromAPI, quotaItems || []);
+  console.log("Quota Items Merged: " + JSON.stringify(quotaItemsMerged));
+
+  const quotasWithMetric = await sq.getQuotasWithUtilizationMetrics(
+    quotaItemsMerged,
+    serviceCode
+  );
+
+  await _putMonitoredQuotas(
+    quotasWithMetric,
+    <string>process.env.SQ_QUOTA_TABLE
+  );
+}
+
+/**
+ * @description Copies the Custom Value to the new item
+ * @param quotaItemsFromAPI
+ * @param quotaItemsFromDDB
+ */
+export function mergeQuotas(
+  quotaItemsFromAPI: ServiceQuotaCustom[],
+  quotaItemsFromDDB: ServiceQuotaCustom[]
+) {
+  const quotaItemsByQuotaCode: { [key: string]: ServiceQuotaCustom } = {};
+  const quotaItemsMerged: ServiceQuotaCustom[] = [];
+
+  for (const [key, value] of Object.entries(quotaItemsFromAPI)) {
+    quotaItemsByQuotaCode[value.QuotaCode || key] = value;
+  }
+
+  for (const [key, value] of Object.entries(quotaItemsFromDDB)) {
+    if (value.ValueCustom) {
+      quotaItemsByQuotaCode[value.QuotaCode || key].ValueCustom =
+        value.ValueCustom;
+    }
+  }
+
+  for (const value of Object.entries(quotaItemsByQuotaCode)) {
+    quotaItemsMerged.push(value[1]);
+  }
+
+  return quotaItemsMerged;
 }
 
 /**
@@ -221,7 +295,7 @@ export async function deleteQuotasForService(serviceCode: string) {
     serviceCode
   );
   const deleteRequestChunks = _getChunkedDeleteQuotasRequests(
-    <ServiceQuota[]>quotaItems
+    <ServiceQuotaCustom[]>quotaItems
   );
   await Promise.allSettled(
     deleteRequestChunks.map(async (chunk) => {
@@ -235,7 +309,7 @@ export async function deleteQuotasForService(serviceCode: string) {
  * @param quotas
  * @returns
  */
-function _getChunkedDeleteQuotasRequests(quotas: ServiceQuota[]) {
+function _getChunkedDeleteQuotasRequests(quotas: ServiceQuotaCustom[]) {
   const deleteRequests = quotas.map((item) => {
     return {
       DeleteRequest: {
@@ -263,11 +337,8 @@ export async function handleDynamoDBStreamEvent(event: Record<string, any>) {
       break;
     }
     case "MODIFY": {
-      await deleteQuotasForService(
-        <string>_record.dynamodb?.NewImage?.ServiceCode.S
-      );
       if (_record.dynamodb?.NewImage?.Monitored?.BOOL)
-        await putQuotasForService(
+        await updateQuotasForService(
           <string>_record.dynamodb?.NewImage?.ServiceCode.S
         );
       break;

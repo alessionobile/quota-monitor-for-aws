@@ -7,11 +7,10 @@ import "aws-sdk-client-mock-jest";
 import {
   ListServicesCommand,
   ListServiceQuotasCommand,
-  ServiceQuota,
   ServiceQuotasClient,
 } from "@aws-sdk/client-service-quotas";
 
-import { ServiceQuotasHelper } from "../lib/servicequotas";
+import { ServiceQuotasHelper, ServiceQuotaCustom } from "../lib/servicequotas";
 
 jest.mock("../lib/cloudwatch", () => {
   const getMetricDataMock = { getMetricData: jest.fn().mockReturnValue([]) };
@@ -113,7 +112,7 @@ describe("Service Quotas Helper", () => {
   });
 
   it("should get quotas with utilization metrics", async () => {
-    const quotas: ServiceQuota[] = [];
+    const quotas: ServiceQuotaCustom[] = [];
 
     for (let i = 1; i < 3; i++) {
       quotas.push({
@@ -138,7 +137,7 @@ describe("Service Quotas Helper", () => {
   });
 
   it("should ignore unsupported quotas", async () => {
-    const quotas: ServiceQuota[] = [];
+    const quotas: ServiceQuotaCustom[] = [];
 
     for (let i = 1; i < 3; i++) {
       quotas.push({

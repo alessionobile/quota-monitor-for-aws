@@ -9,16 +9,13 @@ import {
   paginateListServiceQuotas,
   paginateListServices,
   ServiceInfo,
-  ServiceQuota,
   ServiceQuotasClient,
   ServiceQuotasServiceException,
 } from "@aws-sdk/client-service-quotas";
 import { CloudWatchHelper } from "./cloudwatch";
 import { catchDecorator } from "./catch";
-import {
-  UnsupportedQuotaException,
-} from "./error";
-import { ServiceHelper, sleep } from "./exports";
+import { UnsupportedQuotaException } from "./error";
+import { ServiceHelper, ServiceQuotaCustom, sleep } from "./exports";
 import { logger } from "./logger";
 
 /**
@@ -86,13 +83,13 @@ export class ServiceQuotasHelper extends ServiceHelper<ServiceQuotasClient> {
       },
       { ServiceCode: serviceCode }
     );
-    const quotasSupportingUsage: ServiceQuota[] = [];
+    const quotasSupportingUsage: ServiceQuotaCustom[] = [];
     // get list of quotas which support usage metric
     for await (const page of paginator) {
       if (page.Quotas) {
         quotasSupportingUsage.push(
           ...page.Quotas.filter(
-            (Quota) => Quota.UsageMetric?.MetricNamespace == "AWS/Usage"
+            (Quota) => Quota.UsageMetric?.MetricNamespace != ""
           )
         );
       }
@@ -113,7 +110,7 @@ export class ServiceQuotasHelper extends ServiceHelper<ServiceQuotasClient> {
    */
   @catchDecorator(CloudWatchServiceException, true)
   async getQuotasWithUtilizationMetrics(
-    quotas: ServiceQuota[],
+    quotas: ServiceQuotaCustom[],
     serviceCode?: string
   ) {
     logger.debug({
@@ -129,7 +126,7 @@ export class ServiceQuotasHelper extends ServiceHelper<ServiceQuotasClient> {
     }
 
     const cw = new CloudWatchHelper();
-    const validatedQuotas: ServiceQuota[] = [];
+    const validatedQuotas: ServiceQuotaCustom[] = [];
     await Promise.allSettled(
       quotas.map(async (quota) => {
         const queries = this.generateCWQuery(quota, 300);
@@ -156,7 +153,7 @@ export class ServiceQuotasHelper extends ServiceHelper<ServiceQuotasClient> {
    * @returns
    */
   @catchDecorator(UnsupportedQuotaException, true)
-  generateCWQuery(quota: ServiceQuota, period: number) {
+  generateCWQuery(quota: ServiceQuotaCustom, period: number) {
     logger.debug({
       label: this.moduleName,
       message: `generating cw query for quota ${quota.QuotaCode}`,
@@ -168,7 +165,8 @@ export class ServiceQuotasHelper extends ServiceHelper<ServiceQuotasClient> {
       period
     );
     const percentageUsageQuery = this.generatePercentageUtilizationQuery(
-      <string>usageQuery.Id
+      <string>usageQuery.Id,
+      quota.ValueCustom
     );
     logger.debug({
       label: this.moduleName,
@@ -177,6 +175,11 @@ export class ServiceQuotasHelper extends ServiceHelper<ServiceQuotasClient> {
         percentageUsageQuery: percentageUsageQuery,
       })}`,
     });
+    console.log("Quota Definition: " + JSON.stringify(quota));
+    console.log("Usage query: " + JSON.stringify(usageQuery));
+    console.log(
+      "Percentage Usage query: " + JSON.stringify(percentageUsageQuery)
+    );
     return [usageQuery, percentageUsageQuery];
   }
 
@@ -184,7 +187,7 @@ export class ServiceQuotasHelper extends ServiceHelper<ServiceQuotasClient> {
    * @description validates if given quota supports usage metrics
    * @param quota
    */
-  private validateQuotaHasUsageMetrics(quota: ServiceQuota) {
+  private validateQuotaHasUsageMetrics(quota: ServiceQuotaCustom) {
     if (
       !quota.UsageMetric ||
       !quota.UsageMetric.MetricNamespace ||
@@ -206,15 +209,24 @@ export class ServiceQuotasHelper extends ServiceHelper<ServiceQuotasClient> {
       label: `generateMetricQueryId/metricInfo`,
       message: JSON.stringify(metricInfo),
     });
-    return (
-      metricInfo.MetricDimensions?.Service.toLowerCase() +
+    let id =
+      metricInfo.MetricNamespace?.toLowerCase().replace("/", "") +
       "_" +
-      metricInfo.MetricDimensions?.Resource.toLowerCase() +
-      "_" +
-      metricInfo.MetricDimensions?.Class.toLowerCase().replace("/", "") +
-      "_" +
-      metricInfo.MetricDimensions?.Type.toLowerCase()
-    );
+      metricInfo.MetricName?.toLowerCase();
+
+    if (metricInfo.MetricDimensions?.Service) {
+      id =
+        id +
+        "_" +
+        metricInfo.MetricDimensions?.Service.toLowerCase() +
+        "_" +
+        metricInfo.MetricDimensions?.Resource.toLowerCase() +
+        "_" +
+        metricInfo.MetricDimensions?.Class.toLowerCase().replace("/", "") +
+        "_" +
+        metricInfo.MetricDimensions?.Type.toLowerCase();
+    }
+    return id;
   }
 
   /**
@@ -239,7 +251,7 @@ export class ServiceQuotasHelper extends ServiceHelper<ServiceQuotasClient> {
         Period: period,
         Stat: metricInfo.MetricStatisticRecommendation,
       },
-      ReturnData: false,
+      ReturnData: true,
     };
     return usageQuery;
   }
@@ -249,10 +261,16 @@ export class ServiceQuotasHelper extends ServiceHelper<ServiceQuotasClient> {
    * @param usageQueryId cw query id that fetches usage metric
    * @returns
    */
-  private generatePercentageUtilizationQuery(usageQueryId: string) {
+  private generatePercentageUtilizationQuery(
+    usageQueryId: string,
+    quota: number | undefined
+  ) {
+    const expression = quota
+      ? `(${usageQueryId}/${quota})*100`
+      : `(${usageQueryId}/SERVICE_QUOTA(${usageQueryId}))*100`;
     const percentageUtilizationQuery: MetricDataQuery = {
       Id: `${usageQueryId}_pct_utilization`,
-      Expression: `(${usageQueryId}/SERVICE_QUOTA(${usageQueryId}))*100`,
+      Expression: expression,
       ReturnData: true,
     };
     return percentageUtilizationQuery;

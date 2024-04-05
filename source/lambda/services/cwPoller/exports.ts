@@ -1,7 +1,7 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { MetricInfo, ServiceQuota } from "@aws-sdk/client-service-quotas";
+import { MetricInfo } from "@aws-sdk/client-service-quotas";
 import { MetricDataQuery, MetricDataResult } from "@aws-sdk/client-cloudwatch";
 import { PutEventsRequestEntry } from "@aws-sdk/client-cloudwatch-events";
 import {
@@ -10,6 +10,7 @@ import {
   EventsHelper,
   ServiceQuotasHelper,
   stringEqualsIgnoreCase,
+  ServiceQuotaCustom,
 } from "solutions-utils";
 
 /**
@@ -55,14 +56,14 @@ interface IQuotaUtilizationEvent {
  * @description get frequency in hours
  * @param rate
  * @returns
- */
+
 function getFrequencyInHours(
   rate: string = <string>process.env.POLLER_FREQUENCY
 ) {
   if (rate == FREQUENCY["06_HOUR"]) return 6;
   if (rate == FREQUENCY["12_HOUR"]) return 12;
   else return 24; // default frequency 24 hours
-}
+}*/
 
 /**
  * @description scan quota table and gets quotas to monitor for utilization
@@ -80,12 +81,12 @@ export async function getQuotasForService(table: string, service: string) {
  * @description generates CW GetMetricData queries for all quotas
  * @param quotas
  */
-export function generateCWQueriesForAllQuotas(quotas: ServiceQuota[]) {
+export function generateCWQueriesForAllQuotas(quotas: ServiceQuotaCustom[]) {
   const sq = new ServiceQuotasHelper();
   const queries: MetricDataQuery[] = [];
   quotas.forEach((quota) => {
     try {
-      queries.push(...sq.generateCWQuery(quota, 3600));
+      queries.push(...sq.generateCWQuery(quota, 300));
     } catch (_) {
       // quota throws error with generating query
     }
@@ -93,13 +94,13 @@ export function generateCWQueriesForAllQuotas(quotas: ServiceQuota[]) {
   return queries;
 }
 
-export type MetricQueryIdToQuotaMap = { [key: string]: ServiceQuota };
+export type MetricQueryIdToQuotaMap = { [key: string]: ServiceQuotaCustom };
 
 /**
  * generates a map of metric query ids and the corresponding quota objects from which the ids are generated
  * @param quotas
  */
-export function generateMetricQueryIdMap(quotas: ServiceQuota[]) {
+export function generateMetricQueryIdMap(quotas: ServiceQuotaCustom[]) {
   const sq = new ServiceQuotasHelper();
   const dict: MetricQueryIdToQuotaMap = {};
   for (const quota of quotas) {
@@ -119,7 +120,7 @@ export function generateMetricQueryIdMap(quotas: ServiceQuota[]) {
 export async function getCWDataForQuotaUtilization(queries: MetricDataQuery[]) {
   const cw = new CloudWatchHelper();
   const dataPoints = await cw.getMetricData(
-    new Date(Date.now() - getFrequencyInHours() * 60 * 60 * 1000),
+    new Date(Date.now() - 15 * 60 * 1000),
     new Date(),
     queries
   );

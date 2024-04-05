@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { IncorrectConfigurationException } from "./error";
-
+import { ServiceQuota } from "@aws-sdk/client-service-quotas";
 /**
  * @description interface for all service helper class
  */
@@ -22,6 +22,14 @@ export abstract class ServiceHelper<T> implements IServiceHelper<T> {
    * @description module name to be used in logging
    */
   protected abstract moduleName: string;
+}
+
+export interface ServiceQuotaCustom extends ServiceQuota {
+  /**
+   * @public
+   * <p>The custom quota value.</p>
+   */
+  ValueCustom?: number;
 }
 
 /**
